@@ -5,10 +5,17 @@
 
 package net.neoforged.neoforge.event;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.util.Optional;
 import java.util.function.Consumer;
+
+import cpw.mods.jarhandling.JarContents;
+import cpw.mods.jarhandling.impl.FolderJarContents;
+import cpw.mods.jarhandling.impl.JarFileContents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.packs.FilePackResources;
 import net.minecraft.server.packs.PackLocationInfo;
 import net.minecraft.server.packs.PackSelectionConfig;
 import net.minecraft.server.packs.PackType;
@@ -22,7 +29,11 @@ import net.minecraft.server.packs.repository.RepositorySource;
 import net.neoforged.bus.api.Event;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.event.IModBusEvent;
+import net.neoforged.fml.loading.FMLPaths;
+import net.neoforged.neoforge.resource.JarContentsPackResources;
+import net.neoforged.neoforge.resource.ResourcePackLoader;
 import net.neoforged.neoforgespi.language.IModInfo;
+import org.jetbrains.annotations.Nullable;
 
 /**
  * Fired on {@link PackRepository} creation to allow mods to add new pack finders.
@@ -72,13 +83,16 @@ public class AddPackFindersEvent extends Event implements IModBusEvent {
         if (getPackType() == packType) {
             IModInfo modInfo = ModList.get().getModContainerById(packLocation.getNamespace()).orElseThrow(() -> new IllegalArgumentException("Mod not found: " + packLocation.getNamespace())).getModInfo();
 
-            var resourcePath = modInfo.getOwningFile().getFile().findResource(packLocation.getPath());
-
             var version = modInfo.getVersion();
+
+            String prefix = packLocation.getPath();
 
             var pack = Pack.readMetaAndCreate(
                     new PackLocationInfo("mod/" + packLocation, packNameDisplay, packSource, Optional.of(new KnownPack("neoforge", "mod/" + packLocation, version.toString()))),
-                    BuiltInPackSource.fromName((path) -> new PathPackResources(path, resourcePath)),
+                    BuiltInPackSource.fromName((locationInfo) -> {
+                        var contents = modInfo.getOwningFile().getFile().getContents();
+                        return new JarContentsPackResources(locationInfo, contents, prefix);
+                    }),
                     packType,
                     new PackSelectionConfig(alwaysActive, packPosition, false));
 

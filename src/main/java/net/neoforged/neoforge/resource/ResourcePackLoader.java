@@ -23,10 +23,17 @@ import java.util.Set;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import cpw.mods.jarhandling.EmptyJarContents;
+import cpw.mods.jarhandling.JarContents;
+import cpw.mods.jarhandling.impl.CompositeJarContents;
+import cpw.mods.jarhandling.impl.FolderJarContents;
+import cpw.mods.jarhandling.impl.JarFileContents;
 import net.minecraft.SharedConstants;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.ComponentSerialization;
 import net.minecraft.server.packs.FeatureFlagsMetadataSection;
+import net.minecraft.server.packs.FilePackResources;
 import net.minecraft.server.packs.OverlayMetadataSection;
 import net.minecraft.server.packs.PackLocationInfo;
 import net.minecraft.server.packs.PackResources;
@@ -54,6 +61,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.maven.artifact.versioning.ArtifactVersion;
 import org.jetbrains.annotations.ApiStatus;
+import org.jetbrains.annotations.Nullable;
 
 public class ResourcePackLoader {
     public static final String MOD_DATA_ID = "mod_data";
@@ -208,7 +216,12 @@ public class ResourcePackLoader {
     }
 
     public static Pack.ResourcesSupplier createPackForMod(IModFileInfo mf) {
-        return new PathPackResources.PathResourcesSupplier(mf.getFile().getSecureJar().getRootPath());
+        JarContents contents = mf.getFile().getContents();
+        return switch (contents) {
+            case FolderJarContents folderJarContents -> new PathPackResources.PathResourcesSupplier(folderJarContents.path());
+            case JarFileContents jarFileContents -> new FilePackResources.FileResourcesSupplier(jarFileContents.path());
+            default -> new JarContentsPackResources.JarContentsResourcesSupplier(contents);
+        };
     }
 
     public static List<String> getPackNames(PackType packType) {
