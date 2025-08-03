@@ -98,12 +98,18 @@ dependencies {
         }
         endorseStrictVersions()
     }
+    neoFormMappings("net.neoforged:neoform:${project.minecraft_version}-${project.neoform_version}") {
+        capabilities {
+            requireCapability 'net.neoforged:neoform-parameter-mappings'
+        }
+    }
     neoFormDependencies("net.neoforged:neoform:${project.minecraft_version}-${project.neoform_version}") {
         capabilities {
             requireCapability 'net.neoforged:neoform-dependencies'
         }
         endorseStrictVersions()
     }
+    minecraftDependencies("net.neoforged:minecraft-dependencies:${project.minecraft_version}")
 
     moduleLibraries "net.neoforged.fancymodloader:securejarhandler:${project.fancy_mod_loader_version}"
     moduleLibraries "net.neoforged.fancymodloader:bootstraplauncher:${project.fancy_mod_loader_version}"

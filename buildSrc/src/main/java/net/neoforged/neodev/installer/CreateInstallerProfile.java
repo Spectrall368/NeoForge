@@ -1,9 +1,13 @@
 package net.neoforged.neodev.installer;
 
+import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
 import net.neoforged.neodev.utils.FileUtils;
 import net.neoforged.neodev.utils.MavenIdentifier;
 import org.gradle.api.DefaultTask;
+import org.gradle.api.GradleException;
 import org.gradle.api.artifacts.Configuration;
 import org.gradle.api.file.RegularFileProperty;
 import org.gradle.api.provider.ListProperty;
@@ -17,16 +21,24 @@ import org.gradle.api.tasks.TaskAction;
 import org.jetbrains.annotations.Nullable;
 
 import javax.inject.Inject;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BiConsumer;
+import java.util.stream.Collectors;
 
 /**
  * Creates the JSON profile used by legacyinstaller for installing the client into the vanilla launcher,
@@ -34,7 +46,8 @@ import java.util.function.BiConsumer;
  */
 public abstract class CreateInstallerProfile extends DefaultTask {
     @Inject
-    public CreateInstallerProfile() {}
+    public CreateInstallerProfile() {
+    }
 
     @Input
     public abstract Property<String> getMinecraftVersion();
@@ -53,6 +66,26 @@ public abstract class CreateInstallerProfile extends DefaultTask {
 
     public void addLibraries(Configuration libraries) {
         getLibraryFiles().addAll(IdentifiedFile.listFromConfiguration(getProject(), libraries));
+    }
+
+    /**
+     * The libraries shipped with the vanilla Minecraft server.
+     */
+    @Nested
+    protected abstract ListProperty<IdentifiedFile> getMinecraftServerLibraries();
+
+    public void addMinecraftServerLibraries(Configuration libraries) {
+        getMinecraftServerLibraries().addAll(IdentifiedFile.listFromConfiguration(getProject(), libraries));
+    }
+
+    /**
+     * The libraries downloaded by the vanilla Minecraft client on launch.
+     */
+    @Nested
+    protected abstract ListProperty<IdentifiedFile> getMinecraftClientLibraries();
+
+    public void addMinecraftClientLibraries(Configuration libraries) {
+        getMinecraftClientLibraries().addAll(IdentifiedFile.listFromConfiguration(getProject(), libraries));
     }
 
     @Input
@@ -83,65 +116,56 @@ public abstract class CreateInstallerProfile extends DefaultTask {
     public void createInstallerProfile() throws IOException {
         var icon = "data:image/png;base64," + Base64.getEncoder().encodeToString(Files.readAllBytes(getIcon().getAsFile().get().toPath()));
 
+        var clientMappingsCoordinate = new MavenIdentifier("net.minecraft", "client", getMinecraftVersion().get(), "mappings", "txt");
+        var serverMappingsCoordinate = new MavenIdentifier("net.minecraft", "server", getMinecraftVersion().get(), "mappings", "txt");
+
         var data = new LinkedHashMap<String, LauncherDataEntry>();
         var neoFormVersion = getMcAndNeoFormVersion().get();
-        data.put("MAPPINGS", new LauncherDataEntry(String.format("[net.neoforged:neoform:%s:mappings@txt]", neoFormVersion), String.format("[net.neoforged:neoform:%s:mappings@txt]", neoFormVersion)));
-        data.put("MOJMAPS", new LauncherDataEntry(String.format("[net.minecraft:client:%s:mappings@txt]", neoFormVersion), String.format("[net.minecraft:server:%s:mappings@txt]", neoFormVersion)));
-        data.put("MERGED_MAPPINGS", new LauncherDataEntry(String.format("[net.neoforged:neoform:%s:mappings-merged@txt]", neoFormVersion), String.format("[net.neoforged:neoform:%s:mappings-merged@txt]", neoFormVersion)));
+        data.put("MOJMAPS", new LauncherDataEntry("[" + clientMappingsCoordinate.artifactNotation() + "]", "[" + serverMappingsCoordinate.artifactNotation() + "]"));
         data.put("BINPATCH", new LauncherDataEntry("/data/client.lzma", "/data/server.lzma"));
-        data.put("MC_UNPACKED", new LauncherDataEntry(String.format("[net.minecraft:client:%s:unpacked]", neoFormVersion), String.format("[net.minecraft:server:%s:unpacked]", neoFormVersion)));
-        data.put("MC_SLIM", new LauncherDataEntry(String.format("[net.minecraft:client:%s:slim]", neoFormVersion), String.format("[net.minecraft:server:%s:slim]", neoFormVersion)));
-        data.put("MC_EXTRA", new LauncherDataEntry(String.format("[net.minecraft:client:%s:extra]", neoFormVersion), String.format("[net.minecraft:server:%s:extra]", neoFormVersion)));
-        data.put("MC_SRG", new LauncherDataEntry(String.format("[net.minecraft:client:%s:srg]", neoFormVersion), String.format("[net.minecraft:server:%s:srg]", neoFormVersion)));
         data.put("PATCHED", new LauncherDataEntry(String.format("[%s:%s:%s:client]", "net.neoforged", "neoforge", getNeoForgeVersion().get()), String.format("[%s:%s:%s:server]", "net.neoforged", "neoforge", getNeoForgeVersion().get())));
         data.put("MCP_VERSION", new LauncherDataEntry(String.format("'%s'", neoFormVersion), String.format("'%s'", neoFormVersion)));
 
         var processors = new ArrayList<ProcessorEntry>();
         BiConsumer<InstallerProcessor, List<String>> commonProcessor = (processor, args) -> addProcessor(processors, null, processor, args);
-        BiConsumer<InstallerProcessor, List<String>> clientProcessor = (processor, args) -> addProcessor(processors, List.of("client"), processor, args);
         BiConsumer<InstallerProcessor, List<String>> serverProcessor = (processor, args) -> addProcessor(processors, List.of("server"), processor, args);
 
         serverProcessor.accept(InstallerProcessor.INSTALLERTOOLS,
                 List.of("--task", "EXTRACT_FILES", "--archive", "{INSTALLER}",
-
                         "--from", "data/run.sh", "--to", "{ROOT}/run.sh", "--exec", "{ROOT}/run.sh",
-
                         "--from", "data/run.bat", "--to", "{ROOT}/run.bat",
-
                         "--from", "data/user_jvm_args.txt", "--to", "{ROOT}/user_jvm_args.txt", "--optional", "{ROOT}/user_jvm_args.txt",
-
                         "--from", "data/win_args.txt", "--to", "{ROOT}/libraries/net/neoforged/neoforge/%s/win_args.txt".formatted(getNeoForgeVersion().get()),
-
                         "--from", "data/unix_args.txt", "--to", "{ROOT}/libraries/net/neoforged/neoforge/%s/unix_args.txt".formatted(getNeoForgeVersion().get()))
         );
-        serverProcessor.accept(InstallerProcessor.INSTALLERTOOLS,
-                List.of("--task", "BUNDLER_EXTRACT", "--input", "{MINECRAFT_JAR}", "--output", "{ROOT}/libraries/", "--libraries")
-        );
-        serverProcessor.accept(InstallerProcessor.INSTALLERTOOLS,
-                List.of("--task", "BUNDLER_EXTRACT", "--input", "{MINECRAFT_JAR}", "--output", "{MC_UNPACKED}", "--jar-only")
-        );
-        var neoformDependency = "net.neoforged:neoform:" + getMcAndNeoFormVersion().get() + "@zip";;
-        commonProcessor.accept(InstallerProcessor.INSTALLERTOOLS,
-                List.of("--task", "MCP_DATA", "--input", String.format("[%s]", neoformDependency), "--output", "{MAPPINGS}", "--key", "mappings")
-        );
-        commonProcessor.accept(InstallerProcessor.INSTALLERTOOLS,
-                List.of("--task", "DOWNLOAD_MOJMAPS", "--version", getMinecraftVersion().get(), "--side", "{SIDE}", "--output", "{MOJMAPS}")
-        );
-        commonProcessor.accept(InstallerProcessor.INSTALLERTOOLS,
-                List.of("--task", "MERGE_MAPPING", "--merge", "{MAPPINGS}", "--base", "{MOJMAPS}", "--output", "{MERGED_MAPPINGS}", "--reverse-base")
-        );
-        clientProcessor.accept(InstallerProcessor.JARSPLITTER,
-                List.of("--input", "{MINECRAFT_JAR}", "--slim", "{MC_SLIM}", "--extra", "{MC_EXTRA}", "--srg", "{MERGED_MAPPINGS}")
-        );
-        serverProcessor.accept(InstallerProcessor.JARSPLITTER,
-                List.of("--input", "{MC_UNPACKED}", "--slim", "{MC_SLIM}", "--extra", "{MC_EXTRA}", "--srg", "{MERGED_MAPPINGS}")
-        );
-        // Note that the options supplied here have to match the ones used in the RemapJar task used to generate the binary patches
-        commonProcessor.accept(InstallerProcessor.FART,
-                List.of("--input", "{MC_SLIM}", "--output", "{MC_SRG}", "--names", "{MERGED_MAPPINGS}", "--ann-fix", "--ids-fix", "--src-fix", "--record-fix")
-        );
-        commonProcessor.accept(InstallerProcessor.BINPATCHER,
-                List.of("--clean", "{MC_SRG}", "--output", "{PATCHED}", "--apply", "{BINPATCH}")
+
+        var neoformMappingsDependency = "net.neoforged:neoform:" + getMcAndNeoFormVersion().get() + ":mappings@tsrg.lzma";
+        // Validate it will actually be downloaded
+        if (getLibraryFiles().get().stream().noneMatch(l -> {
+            var identifier = l.getIdentifier().get();
+            return identifier.artifactNotation().equals(neoformMappingsDependency);
+        })) {
+            throw new GradleException("Libraries list must contain NeoForm mappings: " + neoformMappingsDependency);
+        }
+
+        commonProcessor.accept(
+                InstallerProcessor.INSTALLERTOOLS,
+                List.of(
+                        "--task",
+                        "PROCESS_MINECRAFT_JAR",
+                        "--input",
+                        "{MINECRAFT_JAR}",
+                        "--input-mappings",
+                        "{MOJMAPS}",
+                        "--output",
+                        "{PATCHED}",
+                        "--extract-libraries-to",
+                        "{ROOT}/libraries/",
+                        "--neoform-data",
+                        String.format("[%s]", neoformMappingsDependency),
+                        "--apply-patches",
+                        "{BINPATCH}"
+                )
         );
 
         getLogger().info("Collecting libraries for Installer Profile");
@@ -160,8 +184,16 @@ public abstract class CreateInstallerProfile extends DefaultTask {
                 }
             }
         }
+
+        // Find libraries present in *both* client and server, and those will not be downloaded
+        var universalLibraries = getUniversalLibraries();
+        libraryFilesToResolve.values().removeIf(l -> universalLibraries.contains(l.getIdentifier().get()));
+
         var libraries = new ArrayList<>(
                 LibraryCollector.resolveLibraries(getRepositoryURLs().get(), libraryFilesToResolve.values()));
+
+        // Add the client/server mappings
+        collectClientServerMappings(clientMappingsCoordinate, serverMappingsCoordinate, libraries);
 
         var universalJar = getUniversalJar().getAsFile().get().toPath();
         libraries.add(new Library(
@@ -176,6 +208,8 @@ public abstract class CreateInstallerProfile extends DefaultTask {
                                 getNeoForgeVersion().get(),
                                 getNeoForgeVersion().get())
                 ))));
+
+        printDownloadStatistic(libraries);
 
         var profile = new InstallerProfile(
                 1,
@@ -200,6 +234,97 @@ public abstract class CreateInstallerProfile extends DefaultTask {
                 StandardCharsets.UTF_8
         );
     }
+
+    private Set<MavenIdentifier> getUniversalLibraries() {
+        Set<MavenIdentifier> clientLibraries = new HashSet<>();
+        Set<MavenIdentifier> universalLibraries = new HashSet<>();
+        for (IdentifiedFile identifiedFile : getMinecraftClientLibraries().get()) {
+            clientLibraries.add(identifiedFile.getIdentifier().get());
+        }
+        for (IdentifiedFile identifiedFile : getMinecraftServerLibraries().get()) {
+            var identifier = identifiedFile.getIdentifier().get();
+            if (clientLibraries.contains(identifier)) {
+                universalLibraries.add(identifier);
+            }
+        }
+        return universalLibraries;
+    }
+
+    /**
+     * Find the Mojang URLs to download client and server mappings for this minecraft version and
+     * put them into the libraries list of the installer profile.
+     */
+    private void collectClientServerMappings(MavenIdentifier clientMappingsCoordinate, MavenIdentifier serverMappingsCoordinate, List<Library> libraries) throws IOException {
+
+        var client = HttpClient.newHttpClient();
+
+        var versionManifest = getJson(client, "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
+        var minecraftVersion = getMinecraftVersion().get();
+
+        for (JsonElement versionEl : versionManifest.getAsJsonArray("versions")) {
+            JsonObject versionObj = versionEl.getAsJsonObject();
+            if (versionObj.getAsJsonPrimitive("id").getAsString().equals(minecraftVersion)) {
+                var versionUrl = versionObj.getAsJsonPrimitive("url").getAsString();
+                var versionDoc = getJson(client, versionUrl);
+
+                var clientMappings = versionDoc.getAsJsonObject("downloads").getAsJsonObject("client_mappings");
+                libraries.add(new Library(
+                        clientMappingsCoordinate.artifactNotation(),
+                        new LibraryDownload(new LibraryArtifact(
+                                clientMappings.get("sha1").getAsString(),
+                                clientMappings.get("size").getAsLong(),
+                                clientMappings.get("url").getAsString(),
+                                clientMappingsCoordinate.repositoryPath()
+                        ))
+                ));
+
+                var serverMappings = versionDoc.getAsJsonObject("downloads").getAsJsonObject("server_mappings");
+                libraries.add(new Library(
+                        serverMappingsCoordinate.artifactNotation(),
+                        new LibraryDownload(new LibraryArtifact(
+                                serverMappings.get("sha1").getAsString(),
+                                serverMappings.get("size").getAsLong(),
+                                serverMappings.get("url").getAsString(),
+                                serverMappingsCoordinate.repositoryPath()
+                        ))
+                ));
+                return;
+            }
+        }
+
+        throw new IOException("No matching version found for " + minecraftVersion);
+    }
+
+    private JsonObject getJson(HttpClient client, String url) throws IOException {
+        HttpResponse<byte[]> response;
+        try {
+            response = client.send(HttpRequest.newBuilder().uri(URI.create(url)).build(), HttpResponse.BodyHandlers.ofByteArray());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted.", e);
+        }
+
+        if (response.statusCode() != 200) {
+            throw new IOException("Failed HTTP request to " + url + " with status " + response.statusCode());
+        }
+
+        var reader = new InputStreamReader(new ByteArrayInputStream(response.body()), StandardCharsets.UTF_8);
+        return new Gson().fromJson(reader, JsonObject.class);
+    }
+
+    private void printDownloadStatistic(List<Library> libraries) {
+        var downloads = libraries.stream().map(l -> l.downloads().artifact()).toList();
+        long downloadSize = downloads.stream().mapToLong(LibraryArtifact::size).sum();
+        getLogger().lifecycle("Overall installer download size: {} MB",
+                downloadSize / 1024 / 1024);
+        var downloadsByHost = downloads.stream().collect(Collectors.groupingBy(
+                l -> URI.create(l.url()).getHost(),
+                Collectors.summingLong(LibraryArtifact::size)
+        ));
+        for (var entry : downloadsByHost.entrySet()) {
+            getLogger().lifecycle("  from {} = {} MB", entry.getKey(), entry.getValue() / 1024 / 1024);
+        }
+    }
 }
 
 record InstallerProfile(
@@ -216,15 +341,18 @@ record InstallerProfile(
         Map<String, LauncherDataEntry> data,
         List<ProcessorEntry> processors,
         List<Library> libraries,
-        String serverJarPath) {}
+        String serverJarPath) {
+}
 
 record LauncherDataEntry(
         String client,
-        String server) {}
+        String server) {
+}
 
 record ProcessorEntry(
         @Nullable
         List<String> sides,
         String jar,
         List<String> classpath,
-        List<String> args) {}
+        List<String> args) {
+}
