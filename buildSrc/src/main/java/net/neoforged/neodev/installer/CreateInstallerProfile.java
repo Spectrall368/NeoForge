@@ -1,9 +1,6 @@
 package net.neoforged.neodev.installer;
 
-import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.JsonElement;
-import com.google.gson.JsonObject;
 import net.neoforged.neodev.utils.FileUtils;
 import net.neoforged.neodev.utils.MavenIdentifier;
 import org.gradle.api.DefaultTask;
@@ -21,13 +18,8 @@ import org.gradle.api.tasks.TaskAction;
 import org.jetbrains.annotations.Nullable;
 
 import javax.inject.Inject;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
@@ -151,6 +143,12 @@ public abstract class CreateInstallerProfile extends DefaultTask {
             throw new GradleException("Libraries list must contain NeoForm mappings: " + neoformMappingsDependency);
         }
 
+        // This task will be auto-replaced by legacyinstaller and is mostly here for other launchers that
+        // never implemented the optimization of downloading mojmaps ahead of time.
+        commonProcessor.accept(InstallerProcessor.INSTALLERTOOLS,
+                List.of("--task", "DOWNLOAD_MOJMAPS", "--version", getMinecraftVersion().get(), "--side", "{SIDE}", "--output", "{MOJMAPS}")
+        );
+
         commonProcessor.accept(
                 InstallerProcessor.INSTALLERTOOLS,
                 List.of(
@@ -194,9 +192,6 @@ public abstract class CreateInstallerProfile extends DefaultTask {
 
         var libraries = new ArrayList<>(
                 LibraryCollector.resolveLibraries(getRepositoryURLs().get(), libraryFilesToResolve.values()));
-
-        // Add the client/server mappings
-        collectClientServerMappings(clientMappingsCoordinate, serverMappingsCoordinate, libraries);
 
         var universalJar = getUniversalJar().getAsFile().get().toPath();
         libraries.add(new Library(
@@ -251,68 +246,6 @@ public abstract class CreateInstallerProfile extends DefaultTask {
             }
         }
         return universalLibraries;
-    }
-
-    /**
-     * Find the Mojang URLs to download client and server mappings for this minecraft version and
-     * put them into the libraries list of the installer profile.
-     */
-    private void collectClientServerMappings(MavenIdentifier clientMappingsCoordinate, MavenIdentifier serverMappingsCoordinate, List<Library> libraries) throws IOException {
-
-        var client = HttpClient.newHttpClient();
-
-        var versionManifest = getJson(client, "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json");
-        var minecraftVersion = getMinecraftVersion().get();
-
-        for (JsonElement versionEl : versionManifest.getAsJsonArray("versions")) {
-            JsonObject versionObj = versionEl.getAsJsonObject();
-            if (versionObj.getAsJsonPrimitive("id").getAsString().equals(minecraftVersion)) {
-                var versionUrl = versionObj.getAsJsonPrimitive("url").getAsString();
-                var versionDoc = getJson(client, versionUrl);
-
-                var clientMappings = versionDoc.getAsJsonObject("downloads").getAsJsonObject("client_mappings");
-                libraries.add(new Library(
-                        clientMappingsCoordinate.artifactNotation(),
-                        new LibraryDownload(new LibraryArtifact(
-                                clientMappings.get("sha1").getAsString(),
-                                clientMappings.get("size").getAsLong(),
-                                clientMappings.get("url").getAsString(),
-                                clientMappingsCoordinate.repositoryPath()
-                        ))
-                ));
-
-                var serverMappings = versionDoc.getAsJsonObject("downloads").getAsJsonObject("server_mappings");
-                libraries.add(new Library(
-                        serverMappingsCoordinate.artifactNotation(),
-                        new LibraryDownload(new LibraryArtifact(
-                                serverMappings.get("sha1").getAsString(),
-                                serverMappings.get("size").getAsLong(),
-                                serverMappings.get("url").getAsString(),
-                                serverMappingsCoordinate.repositoryPath()
-                        ))
-                ));
-                return;
-            }
-        }
-
-        throw new IOException("No matching version found for " + minecraftVersion);
-    }
-
-    private JsonObject getJson(HttpClient client, String url) throws IOException {
-        HttpResponse<byte[]> response;
-        try {
-            response = client.send(HttpRequest.newBuilder().uri(URI.create(url)).build(), HttpResponse.BodyHandlers.ofByteArray());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new IOException("Interrupted.", e);
-        }
-
-        if (response.statusCode() != 200) {
-            throw new IOException("Failed HTTP request to " + url + " with status " + response.statusCode());
-        }
-
-        var reader = new InputStreamReader(new ByteArrayInputStream(response.body()), StandardCharsets.UTF_8);
-        return new Gson().fromJson(reader, JsonObject.class);
     }
 
     private void printDownloadStatistic(List<Library> libraries) {
