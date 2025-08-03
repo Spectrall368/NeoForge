@@ -121,9 +121,12 @@ public abstract class CreateInstallerProfile extends DefaultTask {
 
         var data = new LinkedHashMap<String, LauncherDataEntry>();
         var neoFormVersion = getMcAndNeoFormVersion().get();
-        data.put("MOJMAPS", new LauncherDataEntry("[" + clientMappingsCoordinate.artifactNotation() + "]", "[" + serverMappingsCoordinate.artifactNotation() + "]"));
+        data.put("MOJMAPS", new LauncherDataEntry(clientMappingsCoordinate, serverMappingsCoordinate));
         data.put("BINPATCH", new LauncherDataEntry("/data/client.lzma", "/data/server.lzma"));
-        data.put("PATCHED", new LauncherDataEntry(String.format("[%s:%s:%s:client]", "net.neoforged", "neoforge", getNeoForgeVersion().get()), String.format("[%s:%s:%s:server]", "net.neoforged", "neoforge", getNeoForgeVersion().get())));
+
+        var patchedClientCoordinate = new MavenIdentifier("net.neoforged", "minecraft-client-patched", getNeoForgeVersion().get(), "", "jar");
+        var patchedServerCoordinate = new MavenIdentifier("net.neoforged", "minecraft-server-patched", getNeoForgeVersion().get(), "", "jar");
+        data.put("PATCHED", new LauncherDataEntry(patchedClientCoordinate, patchedServerCoordinate));
         data.put("MCP_VERSION", new LauncherDataEntry(String.format("'%s'", neoFormVersion), String.format("'%s'", neoFormVersion)));
 
         var processors = new ArrayList<ProcessorEntry>();
@@ -347,6 +350,9 @@ record InstallerProfile(
 record LauncherDataEntry(
         String client,
         String server) {
+    LauncherDataEntry(MavenIdentifier client, MavenIdentifier server) {
+        this("[" + client.artifactNotation() + "]", "[" + server.artifactNotation() + "]");
+    }
 }
 
 record ProcessorEntry(
